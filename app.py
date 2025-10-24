@@ -23,8 +23,9 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN no configurado")
 
-# Crear aplicación de Telegram
+# Crear aplicación de Telegram y loop global
 application = None
+loop = None
 
 # Headers para Hyperliquid API
 HEADERS = {
@@ -126,7 +127,8 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # Agregar handlers y configurar loop
 async def setup_application():
-    global application
+    global application, loop
+    loop = asyncio.get_event_loop()
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analytics", analytics))
@@ -137,15 +139,18 @@ async def setup_application():
     logger.info("Application inicializada y lista")
 
 # Ruta para webhook de Telegram
-@app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     logger.info("Recibida solicitud en /webhook")
     json_data = request.get_json()
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
         try:
-            await application.process_update(update)
+            # Ejecutar coroutine en el loop global
+            future = asyncio.run_coroutine_threadsafe(
+                application.process_update(update), loop
+            )
+            future.result()  # Esperar resultado sin timeout
         except Exception as e:
             logger.error(f"Error procesando update {update.update_id}: {str(e)}", exc_info=True)
     else:
@@ -155,6 +160,7 @@ async def webhook():
 # Configurar aplicación y webhook
 def main():
     # Configurar el loop en el hilo principal
+    global loop
     loop = asyncio.get_event_loop()
     
     # Inicializar application
