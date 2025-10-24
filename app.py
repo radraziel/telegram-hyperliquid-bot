@@ -1,7 +1,6 @@
 import asyncio
 import os
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -16,21 +15,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-executor = ThreadPoolExecutor(max_workers=10)
 
 # Token del bot (de ambiente)
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN no configurado")
 
-# Crear e inicializar aplicación de Telegram
-application = Application.builder().token(TOKEN).build()
+# Crear aplicación de Telegram
+application = None
 
 # Función para llamar a la API de Hyperliquid
 def fetch_info(type_, **kwargs):
     url = "https://api.hyperliquid.xyz/info"
     data = {"type": type_, **kwargs}
-    logger.info(f"Llamando API con type={type_}, kwargs={kwargs}")
+    if type_ == "leaderboard":
+        data["timeframe"] = "1d"  # Agregar timeframe para leaderboard
+    logger.info(f"Llamando API con type={type_}, kwargs={data}")
     response = requests.post(url, json=data)
     response.raise_for_status()
     logger.info(f"Respuesta API: {response.json()}")
@@ -98,7 +98,7 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         prices = fetch_info("allMids")
         leaderboard_data = fetch_info("leaderboard")
-        top_users = leaderboard_data.get("leaderboard", [])[:20]
+        top_users = leaderboard_data.get("leaderboard", [])[:10]  # Reducido a 10 para evitar rate limits
         
         lines = []
         for i, u in enumerate(top_users, 1):
@@ -124,7 +124,7 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             else:
                 lines.append(f"{i}. Sin posiciones abiertas")
         
-        text = f"""🏆 **Top 20 Posiciones Principales (de Top Traders)**
+        text = f"""🏆 **Top 10 Posiciones Principales (de Top Traders)**
 
 {chr(10).join(lines)}
 
@@ -136,32 +136,30 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Error al obtener top20: {str(e)}")
 
 # Agregar handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("analytics", analytics))
-application.add_handler(CommandHandler("top20", top20))
+async def setup_application():
+    global application
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("analytics", analytics))
+    application.add_handler(CommandHandler("top20", top20))
+    await application.initialize()
 
 # Ruta para webhook de Telegram
 @app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     logger.info("Recibida solicitud en /webhook")
     json_data = request.get_json()
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
-        def process_sync():
-            try:
-                asyncio.run(application.process_update(update))
-            except Exception as e:
-                logger.error(f"Error procesando update: {str(e)}")
-        executor.submit(process_sync)
+        await application.process_update(update)
     else:
         logger.warning("No se pudo parsear el update")
     return 'OK'
 
+# Configurar aplicación y webhook
 async def main():
-    # Inicializar la aplicación
-    await application.initialize()
-    # Configurar webhook si está en Render
+    await setup_application()
     port = int(os.environ.get('PORT', 5000))
     hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if hostname:
@@ -171,5 +169,4 @@ async def main():
     app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == '__main__':
-    # Ejecutar la aplicación Flask en un loop asíncrono
     asyncio.run(main())
