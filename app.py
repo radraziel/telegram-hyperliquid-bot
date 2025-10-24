@@ -7,6 +7,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
 import json
+import time
 
 # Configurar logging
 logging.basicConfig(
@@ -26,17 +27,31 @@ if not TOKEN:
 # Crear aplicación de Telegram
 application = None
 
-# Función para llamar a la API de Hyperliquid
-def fetch_info(type_, **kwargs):
-    url = "https://api.hyperliquid.xyz/info"
-    data = {"type": type_, **kwargs}
-    if type_ == "leaderboard":
-        data["timeframe"] = "1d"  # Agregar timeframe para leaderboard
-    logger.info(f"Llamando API con type={type_}, kwargs={data}")
-    response = requests.post(url, json=data)
+# Headers comunes para Hyperdash API
+HEADERS = {
+    'accept': '*/*',
+    'accept-language': 'es-MX,es;q=0.9,en;q=0.8',
+    'content-type': 'application/json',
+    'referer': 'https://hyperdash.info/',
+    'sec-ch-ua': '"Google Chrome";v="129", "Not?A_Brand";v="24", "Chromium";v="129"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    'x-api-key': 'hyperdash_public_7vN3mK8pQ4wX2cL9hF5tR1bY6gS0jD'
+}
+
+# Función para llamar a la API de Hyperdash
+def fetch_hyperdash(endpoint):
+    url = f"https://hyperdash.info/api/hyperdash/{endpoint}"
+    logger.info(f"Llamando Hyperdash API: {url}")
+    response = requests.get(url, headers=HEADERS)
     response.raise_for_status()
-    logger.info(f"Respuesta API: {response.json()}")
-    return response.json()
+    data = response.json()
+    logger.info(f"Respuesta Hyperdash: {data}")
+    return data
 
 # Handler para /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -52,43 +67,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Procesando comando /analytics")
     try:
-        prices = fetch_info("allMids")
-        leaderboard_data = fetch_info("leaderboard")
-        users = [u["user"] for u in leaderboard_data.get("leaderboard", [])][:50]
+        summary_data = fetch_hyperdash("summary")
         
-        long_total = 0.0
-        short_total = 0.0
-        total_ntl = 0.0
+        # Asumiendo estructura del JSON; ajusta si es diferente
+        total_notional = summary_data.get('totalNotional', 'N/A')
+        long_positions = summary_data.get('longPositions', 'N/A')
+        short_positions = summary_data.get('shortPositions', 'N/A')
+        global_bias = summary_data.get('globalBias', 'N/A')
         
-        for user in users:
-            state = fetch_info("userState", user=user)
-            for pos in state.get("assetPositions", []):
-                coin = pos["coin"]
-                szi_str = pos["szi"]
-                szi = float(szi_str) if szi_str else 0.0
-                px = float(prices.get(coin, 0))
-                if px == 0:
-                    continue
-                ntl = abs(szi) * px
-                if szi > 0:
-                    long_total += ntl
-                else:
-                    short_total += ntl
-                total_ntl += ntl
-        
-        if total_ntl == 0:
-            bias = 0.0
-        else:
-            bias = ((long_total - short_total) / total_ntl) * 100
-        
-        text = f"""📊 **Analytics de Hyperliquid (Top Traders)**
+        text = f"""📊 **Analytics de Hyperliquid**
 
-**TOTAL NOTIONAL:** ${long_total + short_total:,.0f}
-**LONG POSITIONS:** ${long_total:,.0f}
-**SHORT POSITIONS:** ${short_total:,.0f}
-**GLOBAL BIAS:** {bias:.1f}% (Long Bias)
+**TOTAL NOTIONAL:** {total_notional}
+**LONG POSITIONS:** {long_positions}
+**SHORT POSITIONS:** {short_positions}
+**GLOBAL BIAS:** {global_bias}
 
-*Datos agregados de los top traders en leaderboard.*"""
+*Datos de Hyperdash API.*"""
         await update.message.reply_text(text)
     except Exception as e:
         logger.error(f"Error en /analytics: {str(e)}")
@@ -98,39 +92,23 @@ async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Procesando comando /top20")
     try:
-        prices = fetch_info("allMids")
-        leaderboard_data = fetch_info("leaderboard")
-        top_users = leaderboard_data.get("leaderboard", [])[:10]  # Reducido a 10 para evitar rate limits
+        top_traders_data = fetch_hyperdash("top-traders-cached")
+        
+        top_users = top_traders_data.get('traders', [])[:20]  # Asumiendo array 'traders'; ajusta si es diferente
         
         lines = []
-        for i, u in enumerate(top_users, 1):
-            state = fetch_info("userState", user=u["user"])
-            max_ntl = 0.0
-            main_coin = ""
-            direction = ""
-            for pos in state.get("assetPositions", []):
-                coin = pos["coin"]
-                szi_str = pos["szi"]
-                szi = float(szi_str) if szi_str else 0.0
-                px = float(prices.get(coin, 0))
-                if px == 0:
-                    continue
-                ntl = abs(szi) * px
-                if ntl > max_ntl:
-                    max_ntl = ntl
-                    main_coin = coin
-                    direction = "Long" if szi > 0 else "Short"
-            if max_ntl > 0:
-                size_m = max_ntl / 1_000_000
-                lines.append(f"{i}. {size_m:.0f}M {direction} {main_coin}")
-            else:
-                lines.append(f"{i}. Sin posiciones abiertas")
+        for i, trader in enumerate(top_users, 1):
+            # Asumiendo estructura; ajusta según respuesta real
+            main_position = trader.get('mainPosition', 'N/A')
+            direction = trader.get('direction', '').upper()
+            coin = trader.get('coin', 'N/A')
+            lines.append(f"{i}. {main_position} {direction} {coin}")
         
-        text = f"""🏆 **Top 10 Posiciones Principales (de Top Traders)**
+        text = f"""🏆 **Top 20 Posiciones Principales (de Top Traders)**
 
 {chr(10).join(lines)}
 
-*Posición principal por trader (mayor notional). Datos de Hyperliquid API.*"""
+*Datos de Hyperdash API.*"""
         logger.info("Enviando respuesta de /top20")
         await update.message.reply_text(text)
     except Exception as e:
