@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -15,6 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+executor = ThreadPoolExecutor(max_workers=10)
 
 # Token del bot (de ambiente)
 TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -146,13 +148,18 @@ async def setup_application():
 
 # Ruta para webhook de Telegram
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     logger.info("Recibida solicitud en /webhook")
     json_data = request.get_json()
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
-        await application.process_update(update)
+        def process_sync():
+            try:
+                asyncio.run(application.process_update(update))
+            except Exception as e:
+                logger.error(f"Error procesando update: {str(e)}")
+        executor.submit(process_sync)
     else:
         logger.warning("No se pudo parsear el update")
     return 'OK'
