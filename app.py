@@ -23,7 +23,7 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN no configurado")
 
-# Crear aplicación de Telegram
+# Crear e inicializar aplicación de Telegram
 application = Application.builder().token(TOKEN).build()
 
 # Función para llamar a la API de Hyperliquid
@@ -158,12 +158,18 @@ def webhook():
         logger.warning("No se pudo parsear el update")
     return 'OK'
 
-if __name__ == '__main__':
+async def main():
+    # Inicializar la aplicación
+    await application.initialize()
+    # Configurar webhook si está en Render
     port = int(os.environ.get('PORT', 5000))
     hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if hostname:
         webhook_url = f"https://{hostname}/webhook"
-        application.bot.set_webhook(url=webhook_url)
+        await application.bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook configurado en: {webhook_url}")
-    
     app.run(host='0.0.0.0', port=port, debug=False)
+
+if __name__ == '__main__':
+    # Ejecutar la aplicación Flask en un loop asíncrono
+    asyncio.run(main())
