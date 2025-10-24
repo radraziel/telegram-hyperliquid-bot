@@ -27,19 +27,24 @@ if not TOKEN:
 # Crear aplicación de Telegram
 application = None
 
-# Headers comunes para Hyperdash API
+# Cookies y Headers para Hyperdash API (agregamos cookies)
+COOKIES = {
+    '__client_uat': '0',
+    '__client_uat_qNzK0IVd': '0'  # De tu cURL
+}
 HEADERS = {
     'accept': '*/*',
-    'accept-language': 'es-MX,es;q=0.9,en;q=0.8',
+    'accept-language': 'es-MX,es-419;q=0.9,es;q=0.8,en;q=0.7',
     'content-type': 'application/json',
-    'referer': 'https://hyperdash.info/',
-    'sec-ch-ua': '"Google Chrome";v="129", "Not?A_Brand";v="24", "Chromium";v="129"',
+    'referer': 'https://hyperdash.info/analytics',  # Específico para cada endpoint, pero usamos general
+    'priority': 'u=1, i',
+    'sec-ch-ua': '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': '"macOS"',
     'sec-fetch-dest': 'empty',
     'sec-fetch-mode': 'cors',
     'sec-fetch-site': 'same-origin',
-    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
     'x-api-key': 'hyperdash_public_7vN3mK8pQ4wX2cL9hF5tR1bY6gS0jD'
 }
 
@@ -47,11 +52,26 @@ HEADERS = {
 def fetch_hyperdash(endpoint):
     url = f"https://hyperdash.info/api/hyperdash/{endpoint}"
     logger.info(f"Llamando Hyperdash API: {url}")
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=HEADERS, cookies=COOKIES)
+    logger.info(f"Status Code: {response.status_code}")
+    logger.info(f"Response Headers: {dict(response.headers)}")  # Para debug 403
     response.raise_for_status()
     data = response.json()
     logger.info(f"Respuesta Hyperdash: {data}")
     return data
+
+# Error handler para Telegram (captura errores y maneja síncronamente)
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(f"Error en bot: {context.error}")
+    # Si hay update, envía un mensaje genérico (síncrono si es posible)
+    if update and hasattr(update, 'effective_message') and update.effective_message:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Ocurrió un error interno. Intenta de nuevo."
+            )
+        except Exception as e:
+            logger.error(f"No se pudo enviar mensaje de error: {e}")
 
 # Handler para /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -122,6 +142,7 @@ async def setup_application():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analytics", analytics))
     application.add_handler(CommandHandler("top20", top20))
+    application.add_error_handler(error_handler)  # Nuevo: Captura errores globales
     await application.initialize()
 
 # Ruta para webhook de Telegram
