@@ -27,44 +27,33 @@ if not TOKEN:
 # Crear aplicación de Telegram
 application = None
 
-# Cookies y Headers para Hyperdash API (agregamos cookies)
-COOKIES = {
-    '__client_uat': '0',
-    '__client_uat_qNzK0IVd': '0'  # De tu cURL
-}
+# Headers para Hyperliquid API
 HEADERS = {
     'accept': '*/*',
-    'accept-language': 'es-MX,es-419;q=0.9,es;q=0.8,en;q=0.7',
     'content-type': 'application/json',
-    'referer': 'https://hyperdash.info/analytics',  # Específico para cada endpoint, pero usamos general
-    'priority': 'u=1, i',
-    'sec-ch-ua': '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"macOS"',
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
-    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-    'x-api-key': 'hyperdash_public_7vN3mK8pQ4wX2cL9hF5tR1bY6gS0jD'
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
 }
 
-# Función para llamar a la API de Hyperdash
-def fetch_hyperdash(endpoint):
-    url = f"https://hyperdash.info/api/hyperdash/{endpoint}"
-    logger.info(f"Llamando Hyperdash API: {url}")
-    response = requests.get(url, headers=HEADERS, cookies=COOKIES)
+# Función para llamar a la API de Hyperliquid
+def fetch_hyperliquid(type_, **kwargs):
+    url = "https://api.hyperliquid.xyz/info"
+    data = {"type": type_, **kwargs}
+    if type_ == "leaderboard":
+        data["sortBy"] = "pnl"  # Para top traders
+    logger.info(f"Llamando Hyperliquid API con payload: {data}")
+    response = requests.post(url, headers=HEADERS, json=data)
     logger.info(f"Status Code: {response.status_code}")
-    logger.info(f"Response Headers: {dict(response.headers)}")  # Para debug 403
+    logger.info(f"Response Headers: {dict(response.headers)}")
     response.raise_for_status()
     data = response.json()
-    logger.info(f"Respuesta Hyperdash: {data}")
+    logger.info(f"Respuesta Hyperliquid: {data}")
+    time.sleep(0.5)  # Evitar rate limits
     return data
 
-# Error handler para Telegram (captura errores y maneja síncronamente)
+# Error handler para Telegram
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Error en bot: {context.error}")
-    # Si hay update, envía un mensaje genérico (síncrono si es posible)
-    if update and hasattr(update, 'effective_message') and update.effective_message:
+    if update and hasattr(update, 'effective_message') and update.effective_chat:
         try:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
@@ -87,13 +76,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Procesando comando /analytics")
     try:
-        summary_data = fetch_hyperdash("summary")
+        # Usamos openInterest para obtener datos agregados
+        summary_data = fetch_hyperliquid("openInterest")
         
-        # Asumiendo estructura del JSON; ajusta si es diferente
+        # Procesar datos (ajusta según estructura real del JSON)
         total_notional = summary_data.get('totalNotional', 'N/A')
-        long_positions = summary_data.get('longPositions', 'N/A')
-        short_positions = summary_data.get('shortPositions', 'N/A')
-        global_bias = summary_data.get('globalBias', 'N/A')
+        long_positions = summary_data.get('longNotional', 'N/A')
+        short_positions = summary_data.get('shortNotional', 'N/A')
+        global_bias = summary_data.get('bias', 'N/A')  # O calcula: long/(long+short)
         
         text = f"""📊 **Analytics de Hyperliquid**
 
@@ -102,7 +92,7 @@ async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 **SHORT POSITIONS:** {short_positions}
 **GLOBAL BIAS:** {global_bias}
 
-*Datos de Hyperdash API.*"""
+*Datos de Hyperliquid API.*"""
         await update.message.reply_text(text)
     except Exception as e:
         logger.error(f"Error en /analytics: {str(e)}")
@@ -112,23 +102,23 @@ async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Procesando comando /top20")
     try:
-        top_traders_data = fetch_hyperdash("top-traders-cached")
+        leaderboard_data = fetch_hyperliquid("leaderboard")
         
-        top_users = top_traders_data.get('traders', [])[:20]  # Asumiendo array 'traders'; ajusta si es diferente
-        
+        top_users = leaderboard_data[:20]  # Primeros 20 traders
         lines = []
         for i, trader in enumerate(top_users, 1):
-            # Asumiendo estructura; ajusta según respuesta real
-            main_position = trader.get('mainPosition', 'N/A')
-            direction = trader.get('direction', '').upper()
+            # Ajusta según estructura real (ejemplo basado en docs)
+            size = trader.get('size', 'N/A')
+            is_long = trader.get('isLong', True)  # True = Long, False = Short
+            direction = "LONG" if is_long else "SHORT"
             coin = trader.get('coin', 'N/A')
-            lines.append(f"{i}. {main_position} {direction} {coin}")
+            lines.append(f"{i}. {size} {direction} {coin}")
         
-        text = f"""🏆 **Top 20 Posiciones Principales (de Top Traders)**
+        text = f"""🏆 **Top 20 Posiciones Principales**
 
 {chr(10).join(lines)}
 
-*Datos de Hyperdash API.*"""
+*Datos de Hyperliquid API.*"""
         logger.info("Enviando respuesta de /top20")
         await update.message.reply_text(text)
     except Exception as e:
@@ -142,7 +132,7 @@ async def setup_application():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analytics", analytics))
     application.add_handler(CommandHandler("top20", top20))
-    application.add_error_handler(error_handler)  # Nuevo: Captura errores globales
+    application.add_error_handler(error_handler)
     await application.initialize()
 
 # Ruta para webhook de Telegram
@@ -153,12 +143,10 @@ def webhook():
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
-        def process_sync():
-            try:
-                asyncio.run(application.process_update(update))
-            except Exception as e:
-                logger.error(f"Error procesando update: {str(e)}")
-        executor.submit(process_sync)
+        # Usamos el loop actual para evitar cerrar el loop
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(executor, lambda: asyncio.run_coroutine_threadsafe(
+            application.process_update(update), loop).result())
     else:
         logger.warning("No se pudo parsear el update")
     return 'OK'
