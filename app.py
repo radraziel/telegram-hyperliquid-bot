@@ -8,6 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
 import json
 import time
+import threading
 
 # Configurar logging
 logging.basicConfig(
@@ -26,7 +27,7 @@ if not TOKEN:
 
 # Crear aplicación de Telegram y loop global
 application = None
-loop = None  # Loop global para manejar coroutines
+loop = None
 
 # Headers para Hyperliquid API
 HEADERS = {
@@ -126,10 +127,10 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error en /top20: {str(e)}")
         await update.message.reply_text(f"Error al obtener top20: {str(e)}")
 
-# Agregar handlers
+# Agregar handlers y configurar loop
 async def setup_application():
     global application, loop
-    loop = asyncio.new_event_loop()  # Crear loop global
+    loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -137,6 +138,8 @@ async def setup_application():
     application.add_handler(CommandHandler("top20", top20))
     application.add_error_handler(error_handler)
     await application.initialize()
+    await application.start()  # Iniciar el application para procesar updates
+    logger.info("Application inicializada y lista")
 
 # Ruta para webhook de Telegram
 @app.route('/webhook', methods=['POST'])
@@ -146,29 +149,33 @@ def webhook():
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
-        # Ejecutar coroutine en el loop global
-        future = asyncio.run_coroutine_threadsafe(
-            application.process_update(update), loop
-        )
         try:
-            future.result(timeout=10)  # Esperar hasta 10 segundos
+            # Ejecutar coroutine en el loop global
+            future = asyncio.run_coroutine_threadsafe(
+                application.process_update(update), loop
+            )
+            future.result()  # Sin timeout para evitar falsos errores
         except Exception as e:
-            logger.error(f"Error procesando update: {str(e)}")
+            logger.error(f"Error procesando update {update.update_id}: {str(e)}", exc_info=True)
     else:
         logger.warning("No se pudo parsear el update")
     return 'OK'
 
 # Configurar aplicación y webhook
+def run_flask():
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
 async def main():
     await setup_application()
-    port = int(os.environ.get('PORT', 5000))
     hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if hostname:
         webhook_url = f"https://{hostname}/webhook"
         await application.bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook configurado en: {webhook_url}")
-    # Ejecutar Flask en el loop global
-    loop.run_in_executor(None, lambda: app.run(host='0.0.0.0', port=port, debug=False))
+    
+    # Ejecutar Flask en un hilo separado
+    threading.Thread(target=run_flask, daemon=True).start()
     loop.run_forever()  # Mantener el loop activo
 
 if __name__ == '__main__':
