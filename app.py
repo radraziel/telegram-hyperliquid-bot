@@ -1,11 +1,19 @@
 import asyncio
 import os
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
 import json
+
+# Configurar logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 executor = ThreadPoolExecutor(max_workers=10)
@@ -22,12 +30,15 @@ application = Application.builder().token(TOKEN).build()
 def fetch_info(type_, **kwargs):
     url = "https://api.hyperliquid.xyz/info"
     data = {"type": type_, **kwargs}
+    logger.info(f"Llamando API con type={type_}, kwargs={kwargs}")
     response = requests.post(url, json=data)
     response.raise_for_status()
+    logger.info(f"Respuesta API: {response.json()}")
     return response.json()
 
 # Handler para /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Procesando comando /start")
     await update.message.reply_text(
         "¡Bot iniciado correctamente!\n\nComandos disponibles:\n"
         "/start - Muestra este mensaje\n"
@@ -37,13 +48,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # Handler para /analytics
 async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Procesando comando /analytics")
     try:
-        # Obtener precios
         prices = fetch_info("allMids")
-        
-        # Obtener leaderboard (asumimos estructura {"leaderboard": [{"user": "0x...", ...}, ...]})
         leaderboard_data = fetch_info("leaderboard")
-        users = [u["user"] for u in leaderboard_data.get("leaderboard", [])][:50]  # Top 50 para eficiencia
+        users = [u["user"] for u in leaderboard_data.get("leaderboard", [])][:50]
         
         long_total = 0.0
         short_total = 0.0
@@ -80,15 +89,14 @@ async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 *Datos agregados de los top traders en leaderboard.*"""
         await update.message.reply_text(text)
     except Exception as e:
+        logger.error(f"Error en /analytics: {str(e)}")
         await update.message.reply_text(f"Error al obtener analytics: {str(e)}")
 
 # Handler para /top20
 async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("Procesando comando /top20")
     try:
-        # Obtener precios
         prices = fetch_info("allMids")
-        
-        # Obtener leaderboard
         leaderboard_data = fetch_info("leaderboard")
         top_users = leaderboard_data.get("leaderboard", [])[:20]
         
@@ -111,7 +119,7 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     main_coin = coin
                     direction = "Long" if szi > 0 else "Short"
             if max_ntl > 0:
-                size_m = max_ntl / 1_000_000  # En millones
+                size_m = max_ntl / 1_000_000
                 lines.append(f"{i}. {size_m:.0f}M {direction} {main_coin}")
             else:
                 lines.append(f"{i}. Sin posiciones abiertas")
@@ -121,8 +129,10 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 {chr(10).join(lines)}
 
 *Posición principal por trader (mayor notional). Datos de Hyperliquid API.*"""
+        logger.info("Enviando respuesta de /top20")
         await update.message.reply_text(text)
     except Exception as e:
+        logger.error(f"Error en /top20: {str(e)}")
         await update.message.reply_text(f"Error al obtener top20: {str(e)}")
 
 # Agregar handlers
@@ -133,12 +143,19 @@ application.add_handler(CommandHandler("top20", top20))
 # Ruta para webhook de Telegram
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    logger.info("Recibida solicitud en /webhook")
     json_data = request.get_json()
     update = Update.de_json(json_data, application.bot)
     if update:
+        logger.info(f"Procesando update: {update.update_id}")
         def process_sync():
-            asyncio.run(application.process_update(update))
+            try:
+                asyncio.run(application.process_update(update))
+            except Exception as e:
+                logger.error(f"Error procesando update: {str(e)}")
         executor.submit(process_sync)
+    else:
+        logger.warning("No se pudo parsear el update")
     return 'OK'
 
 if __name__ == '__main__':
@@ -146,8 +163,7 @@ if __name__ == '__main__':
     hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if hostname:
         webhook_url = f"https://{hostname}/webhook"
-        # Configurar webhook al iniciar
         application.bot.set_webhook(url=webhook_url)
-        print(f"Webhook configurado en: {webhook_url}")
+        logger.info(f"Webhook configurado en: {webhook_url}")
     
     app.run(host='0.0.0.0', port=port, debug=False)
