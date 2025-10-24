@@ -1,14 +1,13 @@
 import asyncio
 import os
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import threading
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
 import json
 import time
-import threading
 
 # Configurar logging
 logging.basicConfig(
@@ -18,16 +17,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-executor = ThreadPoolExecutor(max_workers=10)
 
 # Token del bot (de ambiente)
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN no configurado")
 
-# Crear aplicación de Telegram y loop global
+# Crear aplicación de Telegram
 application = None
-loop = None
 
 # Headers para Hyperliquid API
 HEADERS = {
@@ -54,7 +51,7 @@ def fetch_hyperliquid(type_, **kwargs):
 
 # Error handler para Telegram
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Error en bot: {context.error}")
+    logger.error(f"Error en bot: {context.error}", exc_info=True)
     if update and hasattr(update, 'effective_message') and update.effective_chat:
         try:
             await context.bot.send_message(
@@ -62,7 +59,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                 text="Ocurrió un error interno. Intenta de nuevo."
             )
         except Exception as e:
-            logger.error(f"No se pudo enviar mensaje de error: {e}")
+            logger.error(f"No se pudo enviar mensaje de error: {e}", exc_info=True)
 
 # Handler para /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -97,7 +94,7 @@ async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 *Datos de Hyperliquid API.*"""
         await update.message.reply_text(text)
     except Exception as e:
-        logger.error(f"Error en /analytics: {str(e)}")
+        logger.error(f"Error en /analytics: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Error al obtener analytics: {str(e)}")
 
 # Handler para /top20
@@ -124,37 +121,31 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("Enviando respuesta de /top20")
         await update.message.reply_text(text)
     except Exception as e:
-        logger.error(f"Error en /top20: {str(e)}")
+        logger.error(f"Error en /top20: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Error al obtener top20: {str(e)}")
 
 # Agregar handlers y configurar loop
 async def setup_application():
-    global application, loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    global application
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analytics", analytics))
     application.add_handler(CommandHandler("top20", top20))
     application.add_error_handler(error_handler)
     await application.initialize()
-    await application.start()  # Iniciar el application para procesar updates
+    await application.start()
     logger.info("Application inicializada y lista")
 
 # Ruta para webhook de Telegram
 @app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     logger.info("Recibida solicitud en /webhook")
     json_data = request.get_json()
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
         try:
-            # Ejecutar coroutine en el loop global
-            future = asyncio.run_coroutine_threadsafe(
-                application.process_update(update), loop
-            )
-            future.result()  # Sin timeout para evitar falsos errores
+            await application.process_update(update)
         except Exception as e:
             logger.error(f"Error procesando update {update.update_id}: {str(e)}", exc_info=True)
     else:
@@ -162,21 +153,23 @@ def webhook():
     return 'OK'
 
 # Configurar aplicación y webhook
-def run_flask():
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
-
-async def main():
-    await setup_application()
+def main():
+    # Configurar el loop en el hilo principal
+    loop = asyncio.get_event_loop()
+    
+    # Inicializar application
+    loop.run_until_complete(setup_application())
+    
+    # Configurar webhook
     hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if hostname:
         webhook_url = f"https://{hostname}/webhook"
-        await application.bot.set_webhook(url=webhook_url)
+        loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
         logger.info(f"Webhook configurado en: {webhook_url}")
     
-    # Ejecutar Flask en un hilo separado
-    threading.Thread(target=run_flask, daemon=True).start()
-    loop.run_forever()  # Mantener el loop activo
+    # Ejecutar Flask en el hilo principal
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
