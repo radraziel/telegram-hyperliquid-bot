@@ -24,8 +24,9 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN no configurado")
 
-# Crear aplicación de Telegram
+# Crear aplicación de Telegram y loop global
 application = None
+loop = None  # Loop global para manejar coroutines
 
 # Headers para Hyperliquid API
 HEADERS = {
@@ -127,7 +128,9 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # Agregar handlers
 async def setup_application():
-    global application
+    global application, loop
+    loop = asyncio.new_event_loop()  # Crear loop global
+    asyncio.set_event_loop(loop)
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analytics", analytics))
@@ -143,10 +146,14 @@ def webhook():
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
-        # Usamos el loop actual para evitar cerrar el loop
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(executor, lambda: asyncio.run_coroutine_threadsafe(
-            application.process_update(update), loop).result())
+        # Ejecutar coroutine en el loop global
+        future = asyncio.run_coroutine_threadsafe(
+            application.process_update(update), loop
+        )
+        try:
+            future.result(timeout=10)  # Esperar hasta 10 segundos
+        except Exception as e:
+            logger.error(f"Error procesando update: {str(e)}")
     else:
         logger.warning("No se pudo parsear el update")
     return 'OK'
@@ -160,7 +167,9 @@ async def main():
         webhook_url = f"https://{hostname}/webhook"
         await application.bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook configurado en: {webhook_url}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Ejecutar Flask en el loop global
+    loop.run_in_executor(None, lambda: app.run(host='0.0.0.0', port=port, debug=False))
+    loop.run_forever()  # Mantener el loop activo
 
 if __name__ == '__main__':
     asyncio.run(main())
