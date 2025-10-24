@@ -1,7 +1,6 @@
 import asyncio
 import os
 import logging
-import threading
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -21,9 +20,10 @@ app = Flask(__name__)
 # Token del bot (de ambiente)
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
+    logger.error("TELEGRAM_TOKEN no configurado")
     raise ValueError("TELEGRAM_TOKEN no configurado")
 
-# Crear aplicación de Telegram y loop global
+# Crear aplicación de Telegram
 application = None
 loop = None
 
@@ -128,6 +128,7 @@ async def top20(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # Agregar handlers y configurar loop
 async def setup_application():
     global application, loop
+    logger.info("Iniciando setup_application")
     loop = asyncio.get_event_loop()
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -139,9 +140,16 @@ async def setup_application():
     logger.info("Application inicializada y lista")
 
 # Ruta para webhook de Telegram
+@app.route('/webhook', methods=['POST'])
 def webhook():
     logger.info("Recibida solicitud en /webhook")
+    if application is None:
+        logger.error("Application no inicializada")
+        return 'Application not initialized', 500
     json_data = request.get_json()
+    if not json_data:
+        logger.warning("No se recibió JSON en el webhook")
+        return 'No JSON data', 400
     update = Update.de_json(json_data, application.bot)
     if update:
         logger.info(f"Procesando update: {update.update_id}")
@@ -153,29 +161,54 @@ def webhook():
             future.result()  # Esperar resultado sin timeout
         except Exception as e:
             logger.error(f"Error procesando update {update.update_id}: {str(e)}", exc_info=True)
+            return 'Error processing update', 500
     else:
         logger.warning("No se pudo parsear el update")
+        return 'Invalid update', 400
     return 'OK'
+
+# Ruta de prueba para verificar el servidor
+@app.route('/health', methods=['GET'])
+def health():
+    logger.info("Recibida solicitud en /health")
+    return 'Server is running', 200
 
 # Configurar aplicación y webhook
 def main():
-    # Configurar el loop en el hilo principal
     global loop
+    logger.info("Iniciando main")
     loop = asyncio.get_event_loop()
     
     # Inicializar application
-    loop.run_until_complete(setup_application())
+    try:
+        loop.run_until_complete(setup_application())
+    except Exception as e:
+        logger.error(f"Error inicializando application: {str(e)}", exc_info=True)
+        raise
     
     # Configurar webhook
     hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-    if hostname:
-        webhook_url = f"https://{hostname}/webhook"
+    if not hostname:
+        logger.error("RENDER_EXTERNAL_HOSTNAME no configurado")
+        raise ValueError("RENDER_EXTERNAL_HOSTNAME no configurado")
+    
+    webhook_url = f"https://{hostname}/webhook"
+    try:
         loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
         logger.info(f"Webhook configurado en: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Error configurando webhook: {str(e)}", exc_info=True)
+        raise
     
     # Ejecutar Flask en el hilo principal
     port = int(os.environ.get('PORT', 5000))
+    logger.info(f"Iniciando Flask en puerto {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == '__main__':
-    main()
+    try:
+        logger.info("Iniciando aplicación")
+        main()
+    except Exception as e:
+        logger.error(f"Error en main: {str(e)}", exc_info=True)
+        raise
